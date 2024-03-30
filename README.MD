@@ -10,4 +10,4 @@ Inspired by https://github.com/lmammino/mvp-activities
 
 ## Demo
 
-https://raw.githubusercontent.com/JustinGrote/MicrosoftMvp/main/images/Capture.mp4
+https://github.com/JustinGrote/MicrosoftMvp/assets/15258962/c981f734-eddc-40ad-b756-aac0461a4cf2
