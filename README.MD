@@ -8,6 +8,8 @@ This API is undocumented, use at your own risk.
 
 Inspired by https://github.com/lmammino/mvp-activities
 
+PowerShell Gallery: https://www.powershellgallery.com/packages/MicrosoftMvp
+
 ## Demos
 
 ### Create a New Activity (with Intellisense)
