@@ -1,4 +1,4 @@
-#Requires -Module PSAuthClient
+#Requires -Module PSAuthClient, ThreadJob
 using namespace Microsoft.PowerShell.Commands
 using namespace System.Management.Automation
 $ErrorActionPreference = 'Stop'
@@ -6,8 +6,8 @@ $ErrorActionPreference = 'Stop'
 #region Model
 class MvpActivity {
 	[int]$id
-	[int]$userProfileId
-	[string]$tenant
+	[int]$userProfileId = (Get-MvpContext).MvpProfile.id
+	[string]$tenant = (Get-MvpContext).Tenant
 	[string]$title
 	[string]$description
 	[string]$privateDescription
@@ -33,10 +33,10 @@ Update-TypeData -TypeName 'MvpActivity' -DefaultDisplayPropertySet 'id', 'title'
 
 class MvpSearch {
 	[int]$pageIndex = 1
-	[int]$pageSize = 3
+	[int]$pageSize = 1000
 	[string]$searchKey
-	[string]$tenant = $SCRIPT:Tenant
-	[string]$userProfileIdentifier = $SCRIPT:MvpProfile.userProfileIdentifier
+	[string]$tenant = (Get-MvpContext).Tenant
+	[string]$userProfileIdentifier = (Get-MvpContext).MvpProfile.userProfileIdentifier
 	[string[]]$contributionTargetAudience = @()
 	[string[]]$technologyFocusArea = @()
 	[string[]]$type = @()
@@ -62,7 +62,7 @@ Update-TypeData -TypeName 'MvpSearchResult' -DefaultDisplayPropertySet 'id', 'da
 
 class ActivityTypes: IValidateSetValuesGenerator {
 	[string[]] GetValidValues() {
-		return (Get-MvpActivityData).activityTypes.name
+		return $((Get-MvpActivityData).activityTypes.name)
 	}
 }
 class TechnologyArea: IValidateSetValuesGenerator {
@@ -81,73 +81,97 @@ class TargetAudience: IValidateSetValuesGenerator {
 
 
 #region Engine
-[PSCredential]$SCRIPT:Credential = $null
-$SCRIPT:MvpProfile = $null
+
+#Defaults
 $SCRIPT:Tenant = 'MVP'
 [string]$SCRIPT:BaseUri = 'https://mavenapi-prod.azurewebsites.net/api/'
-$SCRIPT:Data = @{}
+
+#This is used to track the context of the logged in user across runspaces to enable easy parallelization
+
+if (-not [type]::GetType('MicrosoftMvp.UserProfile')) {
+	Add-Type -TypeDefinition '
+		namespace MicrosoftMvp;
+		public static class UserProfile {
+			public static object Context { get; set; }
+		}
+	'
+}
+
+function Get-MvpContext {
+	[MicrosoftMvp.UserProfile]::Context
+}
 
 function Connect-Mvp {
+	[CmdletBinding(DefaultParameterSetName = 'Interactive')]
 	param(
-		# A credential that includes your email address and your API token taken from the Bearer header of the browser in DevTools
-		[PSCredential]$Credential,
+		[ValidateNotNullOrEmpty()]
 		[string]$BaseUri = $SCRIPT:BaseUri,
+		[ValidateNotNullOrEmpty()]
 		[string]$Tenant = $SCRIPT:Tenant,
-		[Switch]$Force
+		[switch]$Force
 	)
 
-	if ($Profile.userProfileIdentifier -and -not $Force) {
-		Write-Warning "You are already connected as $($Credential.UserName). Use -Force to reconnect."
-	} else {
+	if ($Force) {
 		Disconnect-Mvp
 	}
 
-	if (-not $Credential) {
-		$code = Invoke-OAuth2AuthorizationEndpoint -uri 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize' -client_id 'e83f495c-dfa2-48e2-b1d9-3680b16e74e4' -scope 'openid profile User.Read offline_access' -redirect_uri 'https://mvp.microsoft.com' -response_type 'code' -response_mode 'fragment'
-
-		$graphToken = Invoke-RestMethod -Uri 'https://login.microsoftonline.com/common/oauth2/v2.0/token' -Method Post -Body @{
-			client_id     = $code.client_id
-			redirect_uri  = $code.redirect_uri
-			scope         = 'openid profile User.Read offline_access'
-			code          = $code.code
-			code_verifier = $code.code_verifier
-			grant_type    = 'authorization_code'
-			client_info   = 1
-		} -Headers @{
-			Origin  = 'https://mvp.microsoft.com'
-			Referer = 'https://mvp.microsoft.com'
-		}
-
-		$me = Invoke-RestMethod -Uri 'https://graph.microsoft.com/v1.0/me' -Authentication Bearer -Token ($graphToken.access_token | ConvertTo-SecureString -AsPlainText)
-
-		$mvpToken = Invoke-RestMethod -Uri 'https://login.microsoftonline.com/common/oauth2/v2.0/token' -Method Post -Body @{
-			client_id     = $code.client_id
-			refresh_token = $graphToken.refresh_token
-			scope         = 'api://6dabb447-da84-4b4c-b68f-99f5215b2ca7/User.All openid profile offline_access'
-			grant_type    = 'refresh_token'
-			client_info   = 1
-		} -Headers @{
-			Origin  = 'https://mvp.microsoft.com'
-			Referer = 'https://mvp.microsoft.com'
-		}
-
-		$Credential = [pscredential]::new($me.userPrincipalName, ($mvpToken.access_token | ConvertTo-SecureString -AsPlainText))
+	if ((Get-MvpContext).MvpProfile.userProfileIdentifier) {
+		Write-Warning "You are already connected as $((Get-MvpContext).GraphUser.UserPrincipalName). Use -Force or Disconnect-Mvp first to reconnect."
+		return
 	}
 
-	$SCRIPT:MvpProfile = (Invoke-MvpRestMethod "UserStatus/$($Credential.UserName)" -Credential $Credential).userStatusModel
-	if (-not $SCRIPT:MvpProfile.userProfileIdentifier) {
-		throw 'There was an error saving the profile. This is probably a bug.'
+	$code = Invoke-OAuth2AuthorizationEndpoint -uri 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize' -client_id 'e83f495c-dfa2-48e2-b1d9-3680b16e74e4' -scope 'openid profile User.Read offline_access' -redirect_uri 'https://mvp.microsoft.com' -response_type 'code' -response_mode 'fragment'
+
+	#Use the authorization code to fetch a graph token. Origin is important here since we are impersonating an SPA, so we cannot use the typical method to get this token.
+	$graphContext = Invoke-RestMethod -Uri 'https://login.microsoftonline.com/common/oauth2/v2.0/token' -Method Post -Body @{
+		client_id     = $code.client_id
+		redirect_uri  = $code.redirect_uri
+		scope         = 'openid profile User.Read offline_access'
+		code          = $code.code
+		code_verifier = $code.code_verifier
+		grant_type    = 'authorization_code'
+		client_info   = 1
+	} -Headers @{
+		Origin  = 'https://mvp.microsoft.com'
+		Referer = 'https://mvp.microsoft.com'
 	}
-	$SCRIPT:Credential = $Credential
-	$SCRIPT:Tenant = $Tenant
-	Write-Verbose "Connected as $($Credential.UserName) to $BaseUri"
+
+
+	$me = Invoke-RestMethod -Uri 'https://graph.microsoft.com/v1.0/me' -Authentication Bearer -Token ($graphContext.access_token | ConvertTo-SecureString -AsPlainText)
+
+	$mvpToken = Invoke-RestMethod -Uri 'https://login.microsoftonline.com/common/oauth2/v2.0/token' -Method Post -Body @{
+		client_id     = $code.client_id
+		refresh_token = $graphContext.refresh_token
+		scope         = 'api://6dabb447-da84-4b4c-b68f-99f5215b2ca7/User.All openid profile offline_access'
+		grant_type    = 'refresh_token'
+		client_info   = 1
+	} -Headers @{
+		Origin  = 'https://mvp.microsoft.com'
+		Referer = 'https://mvp.microsoft.com'
+	}
+
+	[MicrosoftMvp.UserProfile]::Context = @{
+		Graph       = $graphContext
+		GraphUser   = $me
+		GraphExpire = (Get-Date).AddSeconds($graphContext.expires_in - 60)
+		Mvp         = $mvpToken
+		Tenant      = $Tenant
+		Data        = @{}
+	}
+	(Get-MvpContext).MvpProfile = (Invoke-MvpRestMethod ('UserStatus/' + $me.userPrincipalName)).userStatusModel
+	#Pre-Populate the data, have seen some race conditions if this is lazily evaluated
+	[void](Get-MvpActivityData)
+	Write-Verbose "Connected as $($me.UserName) to $BaseUri"
+}
+
+function Assert-MvpConnection {
+	if (-not (Get-MvpContext)) {
+		throw 'You must connect to the MVP API first using Connect-Mvp'
+	}
 }
 
 function Disconnect-Mvp {
-	$SCRIPT:MvpProfile = $null
-	$SCRIPT:Credential = $null
-	$SCRIPT:Tenant = 'MVP'
-	$SCRIPT:Data = @{}
+	[MicrosoftMvp.UserProfile]::Context = $null
 }
 
 function Invoke-MvpRestMethod {
@@ -162,14 +186,9 @@ function Invoke-MvpRestMethod {
 
 		[ValidateNotNullOrEmpty()]
 		[Parameter(ParameterSetName = 'Uri')]
-		[string]$Uri = $BaseUri,
-
-		[ValidateNotNullOrEmpty()]
-		[PSCredential]$Credential = $SCRIPT:Credential
+		[string]$Uri = $BaseUri
 	)
-	if (-not $Credential) {
-		throw 'You must connect to the MVP API first using Connect-Mvp'
-	}
+	Assert-MvpConnection
 	if ($Endpoint) {
 		$Uri = $BaseUri + $Endpoint
 	}
@@ -179,7 +198,7 @@ function Invoke-MvpRestMethod {
 		Method         = $Method
 		Body           = $Body
 		Authentication = 'Bearer'
-		Token          = $Credential.Password
+		Token          = (Get-MvpContext).Mvp.access_token | ConvertTo-SecureString -AsPlainText
 		Debug          = $false
 		Verbose        = $false
 	}
@@ -211,12 +230,12 @@ function Get-MvpActivityData {
 	.SYNOPSIS
 	Fetches the activity data for the current tenant. Used for dynamic intellisense
 	#>
-	if (-not $SCRIPT:Data.Activity) {
+	if (-not (Get-MvpContext).Data.Activity) {
 		Write-Verbose 'MVP: Fetching Activity Data'
 		$response = Invoke-MvpRestMethod 'SiteContent/Activity/Common/Data' -Body @{tenant = $SCRIPT:Tenant }
-		$SCRIPT:Data.Activity = $response.data
+		(Get-MvpContext).Data.Activity = $response.data
 	}
-	return $SCRIPT:Data.Activity
+	return (Get-MvpContext).Data.Activity
 }
 
 #endregion Engine
@@ -230,9 +249,8 @@ function Search-MvpActivitySummary {
 	)
 
 	$Search = [MvpSearch]@{
-		userProfileIdentifier = $MvpProfile.userProfileIdentifier
-		pageIndex             = $Skip + 1
-		pageSize              = $First
+		pageIndex = $Skip + 1
+		pageSize  = $First
 	}
 	if ($Filter) {
 		$Search.SearchKey = $Filter
@@ -265,11 +283,14 @@ filter Get-MvpActivity {
 
 filter Set-MvpActivity {
 	[OutputType('MvpActivity')]
-	[CmdletBinding()]
+	[CmdletBinding(SupportsShouldProcess)]
 	param(
 		[Parameter(Mandatory, ValueFromPipeline)][MvpActivity]$Activity
 	)
 
+	if (-not $PSCmdlet.ShouldProcess("$($Activity.title): $($Activity | ConvertTo-Json -Depth 2)", 'Update Activity')) {
+		return
+	}
 	try {
 		$response = Invoke-MvpRestMethod -Endpoint 'Activities' -Body @{activity = $Activity } -Method 'PUT'
 		#HACK: Workaround for the fact the returned info is not the same type. Slight performance impact
@@ -286,7 +307,7 @@ filter Add-MvpActivity {
 		[Parameter(Mandatory, ValueFromPipeline)][MvpActivity]$Activity
 	)
 
-	if (-not $PSCmdlet.ShouldProcess("New Activity $($Activity.title): $($Activity | ConvertTo-Json -Depth 2)", 'Create Activity')) {
+	if (-not $PSCmdlet.ShouldProcess("$($Activity.title): $($Activity | ConvertTo-Json -Depth 2)", 'Create Activity')) {
 		return
 	}
 	try {
@@ -314,8 +335,8 @@ filter New-MvpActivity {
 		[int]$Reach
 	)
 	return [MvpActivity]@{
-		userProfileId       = $SCRIPT:MvpProfile.id
-		tenant              = $SCRIPT:Tenant
+		userProfileId       = (Get-MvpContext).MvpProfile.id
+		tenant              = (Get-MvpContext).Tenant
 		title               = $Title
 		description         = $Description
 		date                = $Date ?? (Get-Date)
@@ -323,7 +344,7 @@ filter New-MvpActivity {
 		activityTypeName    = $Type
 		technologyFocusArea = $TechnologyFocusArea
 		quantity            = $Quantity ?? 1
-		reach               = $Reach ?? 100
+		reach               = $Reach ?? 0
 		url                 = 'https://mvp.microsoft.com'
 		targetAudience      = $TargetAudience
 	}
