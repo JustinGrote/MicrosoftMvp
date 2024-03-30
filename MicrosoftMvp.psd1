@@ -12,7 +12,7 @@
 RootModule = 'MicrosoftMvp.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.0.1'
+    ModuleVersion = '0.0.2'
 
 # Supported PSEditions
 # CompatiblePSEditions = @()
@@ -69,8 +69,8 @@ RequiredModules = @('PSAuthClient')
 # NestedModules = @()
 
 # Functions to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no functions to export.
-FunctionsToExport = 'Connect-Mvp', 'Disconnect-Mvp', 'Invoke-MvpRestMethod', 
-               'Search-MvpActivitySummary', 'Get-MvpActivity', 'Set-MvpActivity', 
+FunctionsToExport = 'Connect-Mvp', 'Disconnect-Mvp', 'Invoke-MvpRestMethod',
+               'Search-MvpActivitySummary', 'Get-MvpActivity', 'Set-MvpActivity',
                'Add-MvpActivity', 'New-MvpActivity', 'Remove-MvpActivity'
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
