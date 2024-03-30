@@ -17,3 +17,14 @@ https://github.com/JustinGrote/MicrosoftMvp/assets/15258962/ad7d6925-e8d8-4d6e-8
 
 ### Copy an Existing Activity
 https://github.com/JustinGrote/MicrosoftMvp/assets/15258962/c981f734-eddc-40ad-b756-aac0461a4cf2
+
+
+## Example Scripts
+
+### Import-MvpGithubRepos
+![alt text](images/README/image.png)
+
+### Import-MvpSessionize
+To use this script you must copy the response headers from an authenticated Sessionize session in devtools. Using Get-Clipboard -Raw is recommended.
+
+![alt text](images/README/image-1.png)
