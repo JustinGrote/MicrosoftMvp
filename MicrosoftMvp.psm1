@@ -1,4 +1,3 @@
-#Requires -Module PSAuthClient, ThreadJob
 using namespace Microsoft.PowerShell.Commands
 using namespace System.Management.Automation
 $ErrorActionPreference = 'Stop'
@@ -28,6 +27,12 @@ class MvpActivity {
 	[string]$companyName
 	[string]$microsoftEvent
 	[string]$microsoftEventOther
+	[int]$inPersonAttendees
+	[int]$liveStreamViews
+	[int]$subscriberBase
+	[int]$numberOfSessions
+	[int]$numberOfViews
+	[int]$onDemandViews
 }
 Update-TypeData -TypeName 'MvpActivity' -DefaultDisplayPropertySet 'id', 'title', 'activityTypeName', 'date' -Force
 
@@ -120,7 +125,18 @@ function Connect-Mvp {
 		return
 	}
 
-	$code = Invoke-OAuth2AuthorizationEndpoint -uri 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize' -client_id 'e83f495c-dfa2-48e2-b1d9-3680b16e74e4' -scope 'openid profile User.Read offline_access' -redirect_uri 'https://mvp.microsoft.com' -response_type 'code' -response_mode 'fragment'
+	$oauthParams = @{
+		Uri              = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize'
+		Client_id        = 'e83f495c-dfa2-48e2-b1d9-3680b16e74e4'
+		Scope            = 'openid profile User.Read offline_access'
+		Redirect_uri     = 'https://mvp.microsoft.com'
+		Response_type    = 'code'
+		Response_mode    = 'fragment'
+		CustomParameters = @{
+			prompt = 'select_account'
+		}
+	}
+	$code = Invoke-OAuth2AuthorizationEndpoint @oauthParams
 
 	#Use the authorization code to fetch a graph token. Origin is important here since we are impersonating an SPA, so we cannot use the typical method to get this token.
 	$graphContext = Invoke-RestMethod -Uri 'https://login.microsoftonline.com/common/oauth2/v2.0/token' -Method Post -Body @{
@@ -159,19 +175,24 @@ function Connect-Mvp {
 		Data        = @{}
 	}
 	(Get-MvpContext).MvpProfile = (Invoke-MvpRestMethod ('UserStatus/' + $me.userPrincipalName)).userStatusModel
+	if ((Get-MvpContext).MvpProfile.userProfileIdentifier -eq [Guid]::Empty) {
+		ThrowCmdletError 'This account does not have an MVP profile associated (Missing userProfileIdentifier). Contact MVP support for assistance.'
+		Disconnect-Mvp
+	}
 	#Pre-Populate the data, have seen some race conditions if this is lazily evaluated
 	[void](Get-MvpActivityData)
-	Write-Verbose "Connected as $($me.UserName) to $BaseUri"
+	Write-Verbose "Connected as $((Get-MvpContext).GraphUser.UserPrincipalName) to $BaseUri"
 }
 
 function Assert-MvpConnection {
-	if (-not (Get-MvpContext)) {
-		throw 'You must connect to the MVP API first using Connect-Mvp'
+	if ($null -eq [MicrosoftMvp.UserProfile]::Context) {
+		ThrowCmdletError 'You must connect to the MVP API first using Connect-Mvp'
 	}
 }
 
 function Disconnect-Mvp {
 	[MicrosoftMvp.UserProfile]::Context = $null
+	Clear-WebView2Cache
 }
 
 function Invoke-MvpRestMethod {
@@ -277,11 +298,15 @@ filter Get-MvpActivity {
 		[Parameter(Position = 0, ParameterSetName = 'Filter')][string]$Filter,
 		[int]$First = 100,
 		[int]$Skip = 0,
-		[Parameter(ValueFromPipelineByPropertyName, ParameterSetName = 'Id')][int]$Id
+		[Parameter(ValueFromPipelineByPropertyName, ParameterSetName = 'Id')][int]$Id,
+		$ThrottleLimit = 10
 	)
 	try {
 		if (-not $Id) {
-			Search-MvpActivitySummary -Filter $Filter -First $First -Skip $Skip | Get-MvpActivity
+			Search-MvpActivitySummary -Filter $Filter -First $First -Skip $Skip
+			| ForEach-Object -ThrottleLimit $ThrottleLimit -UseNewRunspace -Parallel {
+				$_ | Get-MvpActivity
+			}
 			return
 		}
 
@@ -393,6 +418,14 @@ filter ThrowCmdletError {
 		[Parameter(ValueFromPipeline)][ErrorRecord]$ErrorRecord,
 		$ThisCmdlet = $(Get-Variable -Scope 1 -Name PSCmdlet -ValueOnly)
 	)
+	if (-not $errorRecord) {
+		$ErrorRecord = [ErrorRecord]::new(
+			[System.InvalidOperationException]::new('An error occured created by ThrowCmdletError'),
+			'Error',
+			[System.Management.Automation.ErrorCategory]::NotSpecified,
+			$ThisCmdlet
+		)
+	}
 	if ($Message) {
 		$ErrorRecord.ErrorDetails = $Message
 	}
