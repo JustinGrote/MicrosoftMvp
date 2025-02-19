@@ -22,7 +22,7 @@ param(
 	$ThrottleLimit = 30
 )
 
-if ($requestHeaders -notmatch '.AspNet.ApplicationCookie=([^;]*)') {
+if ($RequestHeaders -notmatch '.AspNet.ApplicationCookie=([^;]*)') {
 	throw 'Invalid Request Headers, it should have an aspnet.applicationcookie in the content.'
 }
 
@@ -175,18 +175,17 @@ $sessionsToUpdate | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
 	}
 
 	$activity = $existingActivity ? ($existingActivity | Get-MvpActivity) : $(
-		#HACK: Due to threading issues with validators, we need to do this non-validated:
-		$mvpActivity = & (Get-Module microsoftmvp) { [mvpactivity]::new() }
-
-		$mvpActivity.title = $activityTitle
-		$mvpActivity.activityTypeName = 'Speaker/Presenter at Third-party event'
-
-		$mvpActivity.url = $session.url
-		$mvpActivity.date = $session.date
-		$mvpActivity.description = $session.description.Substring(0, [Math]::Min($session.description.Length, 1000))
-		$mvpActivity.technologyFocusArea = $session.TechFocusArea
-		$mvpActivity.targetAudience = 'Developer', 'IT Pro'
-		$mvpActivity
+		$activityParams = @{
+			Title = $activityTitle
+			Type = 'Speaker/Presenter at Third-party event'
+			Date = $session.date
+			Description = $session.description.Substring(0, [Math]::Min($session.description.Length, 1000))
+			TechnologyFocusArea = $session.TechFocusArea
+			TargetAudience = 'Developer', 'IT Pro'
+		}
+		$newActivity = New-MvpActivity @activityParams
+		$newActivity.url = $session.url
+		$newActivity
 	)
 
 	if ($existingActivity) {
