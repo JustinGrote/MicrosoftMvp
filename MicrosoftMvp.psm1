@@ -212,7 +212,12 @@ function Invoke-MvpRestMethod {
 	try {
 		$response = Invoke-RestMethod @irmParams
 	} catch {
-		$jsonError = $($PSItem.ErrorDetails.Message | ConvertFrom-Json -ErrorAction SilentlyContinue)
+		$err = $PSItem
+		try {
+			$jsonError = $($err.ErrorDetails.Message | ConvertFrom-Json -ErrorAction SilentlyContinue)
+		} catch {
+			Write-Debug "Exception Raised but JSON Error Not Found for $err`: $PSItem. Emitting original error."
+		}
 		if ($jsonError.error) {
 			$PSItem | ThrowCmdletError "$($jsonError.error.code): $($jsonError.error.message) $($jsonError.error.Details)"
 			return
@@ -220,7 +225,7 @@ function Invoke-MvpRestMethod {
 		if ($jsonError.errors) {
 			$PSItem | ThrowCmdletError "$($jsonError.title)`n$($jsonError.errors | Format-List | Out-String)"
 		}
-		throw $PSItem
+		$PSCmdlet.ThrowTerminatingError($PSItem)
 	}
 	return $response
 }
@@ -232,7 +237,11 @@ function Get-MvpActivityData {
 	#>
 	if (-not (Get-MvpContext).Data.Activity) {
 		Write-Verbose 'MVP: Fetching Activity Data'
-		$response = Invoke-MvpRestMethod 'SiteContent/Activity/Common/Data' -Body @{tenant = $SCRIPT:Tenant }
+		try {
+			$response = Invoke-MvpRestMethod 'SiteContent/Activity/Common/Data' -Body @{tenant = $SCRIPT:Tenant }
+		} catch {
+			$PSItem | ThrowCmdletError
+		}
 		(Get-MvpContext).Data.Activity = $response.data
 	}
 	return (Get-MvpContext).Data.Activity
@@ -270,11 +279,12 @@ filter Get-MvpActivity {
 		[int]$Skip = 0,
 		[Parameter(ValueFromPipelineByPropertyName, ParameterSetName = 'Id')][int]$Id
 	)
-	if (-not $Id) {
-		Search-MvpActivitySummary -Filter $Filter -First $First -Skip $Skip | Get-MvpActivity
-		return
-	}
 	try {
+		if (-not $Id) {
+			Search-MvpActivitySummary -Filter $Filter -First $First -Skip $Skip | Get-MvpActivity
+			return
+		}
+
 		[MvpActivity](Invoke-MvpRestMethod "Activities/$Id")
 	} catch {
 		$PSItem | ThrowCmdletError
