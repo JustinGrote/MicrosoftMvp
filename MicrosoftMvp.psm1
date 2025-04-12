@@ -3,6 +3,7 @@ using namespace System.Management.Automation
 $ErrorActionPreference = 'Stop'
 
 #region Model
+[NoRunspaceAffinity()]
 class MvpActivity {
 	[int]$id
 	[int]$userProfileId = (Get-MvpContext).MvpProfile.id
@@ -36,6 +37,7 @@ class MvpActivity {
 }
 Update-TypeData -TypeName 'MvpActivity' -DefaultDisplayPropertySet 'id', 'title', 'activityTypeName', 'date' -Force
 
+[NoRunspaceAffinity()]
 class MvpSearch {
 	[int]$pageIndex = 1
 	[int]$pageSize = 1000
@@ -47,6 +49,7 @@ class MvpSearch {
 	[string[]]$type = @()
 }
 
+[NoRunspaceAffinity()]
 class MvpSearchResult {
 	[int]$searchScore
 	[int]$id
@@ -65,16 +68,19 @@ class MvpSearchResult {
 }
 Update-TypeData -TypeName 'MvpSearchResult' -DefaultDisplayPropertySet 'id', 'date', 'title', 'type' -Force
 
+[NoRunspaceAffinity()]
 class ActivityTypes: IValidateSetValuesGenerator {
 	[string[]] GetValidValues() {
 		return $((Get-MvpActivityData).activityTypes.name)
 	}
 }
+[NoRunspaceAffinity()]
 class TechnologyArea: IValidateSetValuesGenerator {
 	[string[]] GetValidValues() {
 		return (Get-MvpActivityData).technologyArea.technologyName
 	}
 }
+[NoRunspaceAffinity()]
 class TargetAudience: IValidateSetValuesGenerator {
 	[string[]] GetValidValues() {
 		return (Get-MvpActivityData).targetAudience.name

@@ -38,6 +38,7 @@ $targetRepos = $repos
 $mvpModulePath = (Get-Module MicrosoftMvp).path
 $InformationPreference = 'Continue'
 
+Write-Verbose 'Starting Parallel Invocation'
 $targetRepos | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
 	Import-Module -Force $USING:mvpModulePath
 	$VerbosePreference = $USING:VerbosePreference
@@ -46,6 +47,7 @@ $targetRepos | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
 
 	$repo = $PSItem
 	$activityTitle = "GitHub: $($repo.name)"
+	Write-Verbose "Processing $activityTitle"
 	$existingActivity = $USING:existingActivities
 	| Where-Object title -EQ $activityTitle
 	| Get-MvpActivity
