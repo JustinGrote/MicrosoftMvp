@@ -112,6 +112,100 @@ function Get-MvpContext {
 	[MicrosoftMvp.UserProfile]::Context
 }
 
+function Invoke-BrowserAuthFlow {
+	<#
+	.SYNOPSIS
+	Performs OAuth2 authorization code flow with PKCE using the default browser.
+	User must paste the redirect URL after authentication.
+	#>
+	[CmdletBinding()]
+	param(
+		[Parameter(Mandatory)]
+		[string]$ClientId,
+		[Parameter(Mandatory)]
+		[string]$Scope,
+		[string]$RedirectUri = 'https://mvp.microsoft.com'
+	)
+
+	# Generate PKCE code verifier and challenge
+	$codeVerifierBytes = [byte[]]::new(32)
+	[System.Security.Cryptography.RandomNumberGenerator]::Fill($codeVerifierBytes)
+	$codeVerifier = [Convert]::ToBase64String($codeVerifierBytes) -replace '\+', '-' -replace '/', '_' -replace '='
+
+	$codeVerifierAscii = [System.Text.Encoding]::ASCII.GetBytes($codeVerifier)
+	$codeChallengeHash = [System.Security.Cryptography.SHA256]::HashData($codeVerifierAscii)
+	$codeChallenge = [Convert]::ToBase64String($codeChallengeHash) -replace '\+', '-' -replace '/', '_' -replace '='
+
+	# Generate state for CSRF protection
+	$stateBytes = [byte[]]::new(16)
+	[System.Security.Cryptography.RandomNumberGenerator]::Fill($stateBytes)
+	$state = [Convert]::ToBase64String($stateBytes) -replace '\+', '-' -replace '/', '_' -replace '='
+
+	# Build authorization URL
+	$authParams = @{
+		client_id             = $ClientId
+		response_type         = 'code'
+		redirect_uri          = $RedirectUri
+		response_mode         = 'fragment'
+		scope                 = $Scope
+		state                 = $state
+		code_challenge        = $codeChallenge
+		code_challenge_method = 'S256'
+		prompt                = 'select_account'
+	}
+	$queryString = ($authParams.GetEnumerator() | ForEach-Object { "$($_.Key)=$([Uri]::EscapeDataString($_.Value))" }) -join '&'
+	$authUrl = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?$queryString"
+
+	# Open browser
+	Write-Host "`nOpening browser for authentication..."
+	if ($IsMacOS) {
+		Start-Process 'open' -ArgumentList $authUrl
+	} elseif ($IsLinux) {
+		Start-Process 'xdg-open' -ArgumentList $authUrl
+	} else {
+		Start-Process $authUrl
+	}
+
+	Write-Host "`nAfter signing in, you will be redirected to the MVP portal."
+	Write-Host "Copy the " -NoNewline
+	Write-Host "entire URL" -ForegroundColor Cyan -NoNewline
+	Write-Host " from your browser's address bar and paste it below."
+	Write-Host "(The URL will start with: $RedirectUri)`n"
+
+	$redirectUrl = Read-Host "Paste the redirect URL"
+
+	# Parse the fragment from the URL
+	if ($redirectUrl -notmatch '#') {
+		throw "Invalid redirect URL. Expected URL with fragment containing authorization code."
+	}
+
+	$fragment = ($redirectUrl -split '#')[1]
+	$fragmentParams = @{}
+	foreach ($param in ($fragment -split '&')) {
+		$parts = $param -split '=', 2
+		$fragmentParams[$parts[0]] = [Uri]::UnescapeDataString($parts[1])
+	}
+
+	if ($fragmentParams.error) {
+		throw "Authentication failed: $($fragmentParams.error) - $($fragmentParams.error_description)"
+	}
+
+	if ($fragmentParams.state -ne $state) {
+		throw "State mismatch. Possible CSRF attack or stale authentication attempt."
+	}
+
+	if (-not $fragmentParams.code) {
+		throw "No authorization code found in redirect URL."
+	}
+
+	return @{
+		code          = $fragmentParams.code
+		code_verifier = $codeVerifier
+		client_id     = $ClientId
+		redirect_uri  = $RedirectUri
+	}
+}
+
 function Connect-Mvp {
 	[CmdletBinding(DefaultParameterSetName = 'Interactive')]
 	param(
@@ -119,7 +213,9 @@ function Connect-Mvp {
 		[string]$BaseUri = $SCRIPT:BaseUri,
 		[ValidateNotNullOrEmpty()]
 		[string]$Tenant = $SCRIPT:Tenant,
-		[switch]$Force
+		[switch]$Force,
+		[Alias('DeviceCode')]
+		[switch]$UseDefaultBrowser
 	)
 
 	if ($Force) {
@@ -131,18 +227,31 @@ function Connect-Mvp {
 		return
 	}
 
-	$oauthParams = @{
-		Uri              = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize'
-		Client_id        = 'e83f495c-dfa2-48e2-b1d9-3680b16e74e4'
-		Scope            = 'openid profile User.Read offline_access'
-		Redirect_uri     = 'https://mvp.microsoft.com'
-		Response_type    = 'code'
-		Response_mode    = 'fragment'
-		CustomParameters = @{
-			prompt = 'select_account'
+	$clientId = 'e83f495c-dfa2-48e2-b1d9-3680b16e74e4'
+
+	# Determine auth method: use WebView2 on Windows with PSAuthClient, otherwise browser flow
+	$useBrowserAuth = $UseDefaultBrowser -or
+		(-not $IsWindows) -or
+		(-not (Get-Command 'Invoke-OAuth2AuthorizationEndpoint' -ErrorAction SilentlyContinue))
+
+	if ($useBrowserAuth) {
+		# Browser-based PKCE flow for cross-platform support
+		$code = Invoke-BrowserAuthFlow -ClientId $clientId -Scope 'openid profile User.Read offline_access'
+	} else {
+		# WebView2 flow (Windows with PSAuthClient)
+		$oauthParams = @{
+			Uri              = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize'
+			Client_id        = $clientId
+			Scope            = 'openid profile User.Read offline_access'
+			Redirect_uri     = 'https://mvp.microsoft.com'
+			Response_type    = 'code'
+			Response_mode    = 'fragment'
+			CustomParameters = @{
+				prompt = 'select_account'
+			}
 		}
+		$code = Invoke-OAuth2AuthorizationEndpoint @oauthParams
 	}
-	$code = Invoke-OAuth2AuthorizationEndpoint @oauthParams
 
 	#Use the authorization code to fetch a graph token. Origin is important here since we are impersonating an SPA, so we cannot use the typical method to get this token.
 	$graphContext = Invoke-RestMethod -Uri 'https://login.microsoftonline.com/common/oauth2/v2.0/token' -Method Post -Body @{
@@ -158,11 +267,10 @@ function Connect-Mvp {
 		Referer = 'https://mvp.microsoft.com'
 	}
 
-
 	$me = Invoke-RestMethod -Uri 'https://graph.microsoft.com/v1.0/me' -Authentication Bearer -Token ($graphContext.access_token | ConvertTo-SecureString -AsPlainText)
 
 	$mvpToken = Invoke-RestMethod -Uri 'https://login.microsoftonline.com/common/oauth2/v2.0/token' -Method Post -Body @{
-		client_id     = $code.client_id
+		client_id     = $clientId
 		refresh_token = $graphContext.refresh_token
 		scope         = 'api://6dabb447-da84-4b4c-b68f-99f5215b2ca7/User.All openid profile offline_access'
 		grant_type    = 'refresh_token'
@@ -198,7 +306,10 @@ function Assert-MvpConnection {
 
 function Disconnect-Mvp {
 	[MicrosoftMvp.UserProfile]::Context = $null
-	Clear-WebView2Cache
+	# Clear-WebView2Cache is only available on Windows with PSAuthClient
+	if ($IsWindows -and (Get-Command 'Clear-WebView2Cache' -ErrorAction SilentlyContinue)) {
+		Clear-WebView2Cache
+	}
 }
 
 function Invoke-MvpRestMethod {
@@ -370,24 +481,27 @@ filter New-MvpActivity {
 		[Parameter(Mandatory)][string]$TechnologyFocusArea,
 		[ValidateSet([TargetAudience])]
 		[Parameter(Mandatory)][string[]]$TargetAudience,
+		[ValidateSet([TechnologyArea])]
+		[string[]]$AdditionalTechnologyAreas,
 		[DateTime]$Date,
 		[DateTime]$EndDate,
 		[int]$Quantity,
 		[int]$Reach
 	)
 	return [MvpActivity]@{
-		userProfileId       = (Get-MvpContext).MvpProfile.id
-		tenant              = (Get-MvpContext).Tenant
-		title               = $Title
-		description         = $Description
-		date                = $Date ?? (Get-Date)
-		dateEnd             = $EndDate ?? (Get-Date)
-		activityTypeName    = $Type
-		technologyFocusArea = $TechnologyFocusArea
-		quantity            = $Quantity ?? 1
-		reach               = $Reach ?? 0
-		url                 = 'https://mvp.microsoft.com'
-		targetAudience      = $TargetAudience
+		userProfileId            = (Get-MvpContext).MvpProfile.id
+		tenant                   = (Get-MvpContext).Tenant
+		title                    = $Title
+		description              = $Description
+		date                     = $Date ?? (Get-Date)
+		dateEnd                  = $EndDate ?? (Get-Date)
+		activityTypeName         = $Type
+		technologyFocusArea      = $TechnologyFocusArea
+		additionalTechnologyAreas = $AdditionalTechnologyAreas ?? @()
+		quantity                 = $Quantity ?? 1
+		reach                    = $Reach ?? 0
+		url                      = 'https://mvp.microsoft.com'
+		targetAudience           = $TargetAudience
 	}
 }
 
