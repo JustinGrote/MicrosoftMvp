@@ -157,7 +157,7 @@ function Invoke-BrowserAuthFlow {
 	$authUrl = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?$queryString"
 
 	# Open browser
-	Write-Host "`nOpening browser for authentication..."
+	Write-Information "Opening browser for authentication..." -InformationAction Continue
 	if ($IsMacOS) {
 		Start-Process 'open' -ArgumentList $authUrl
 	} elseif ($IsLinux) {
@@ -166,11 +166,9 @@ function Invoke-BrowserAuthFlow {
 		Start-Process $authUrl
 	}
 
-	Write-Host "`nAfter signing in, you will be redirected to the MVP portal."
-	Write-Host "Copy the " -NoNewline
-	Write-Host "entire URL" -ForegroundColor Cyan -NoNewline
-	Write-Host " from your browser's address bar and paste it below."
-	Write-Host "(The URL will start with: $RedirectUri)`n"
+	Write-Information "After signing in, you will be redirected to the MVP portal." -InformationAction Continue
+	Write-Information "Copy the ENTIRE URL from your browser's address bar and paste it below." -InformationAction Continue
+	Write-Information "(The URL will start with: $RedirectUri)" -InformationAction Continue
 
 	$redirectUrl = Read-Host "Paste the redirect URL"
 
@@ -183,6 +181,9 @@ function Invoke-BrowserAuthFlow {
 	$fragmentParams = @{}
 	foreach ($param in ($fragment -split '&')) {
 		$parts = $param -split '=', 2
+		if ($parts.Count -lt 2 -or [string]::IsNullOrEmpty($parts[0])) {
+			continue
+		}
 		$fragmentParams[$parts[0]] = [Uri]::UnescapeDataString($parts[1])
 	}
 
@@ -214,7 +215,7 @@ function Connect-Mvp {
 		[ValidateNotNullOrEmpty()]
 		[string]$Tenant = $SCRIPT:Tenant,
 		[switch]$Force,
-		[Alias('DeviceCode')]
+		[Alias('Browser','DefaultBrowser')]
 		[switch]$UseDefaultBrowser
 	)
 
