@@ -308,7 +308,7 @@ function Assert-MvpConnection {
 function Disconnect-Mvp {
 	[MicrosoftMvp.UserProfile]::Context = $null
 	# Clear-WebView2Cache is only available on Windows with PSAuthClient
-	if ($IsWindows -and (Get-Command 'Clear-WebView2Cache' -ErrorAction SilentlyContinue)) {
+	if ($IsWindows -and (Get-Module -Name PSAuthClient -ErrorAction SilentlyContinue) -and (Get-Command 'Clear-WebView2Cache' -ErrorAction SilentlyContinue)) {
 		Clear-WebView2Cache
 	}
 }
