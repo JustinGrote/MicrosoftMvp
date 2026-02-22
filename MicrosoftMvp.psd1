@@ -12,7 +12,7 @@
 RootModule    = 'MicrosoftMvp.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.0.3'
+ModuleVersion = '0.0.4'
 
 # Supported PSEditions
 # CompatiblePSEditions = @()
@@ -51,7 +51,8 @@ PowerShellVersion = '7.2'
 # ProcessorArchitecture = ''
 
 # Modules that must be imported into the global environment prior to importing this module
-RequiredModules = @('PSAuthClient')
+# PSAuthClient is optional - only needed for WebView2 auth on Windows
+# RequiredModules = @('PSAuthClient')
 
 # Assemblies that must be loaded prior to importing this module
 # RequiredAssemblies = @()
@@ -97,7 +98,7 @@ PrivateData = @{
     PSData = @{
 
         # Tags applied to this module. These help with module discovery in online galleries.
-        Tags = 'Microsoft', 'MVP', 'Apply', 'Activity'
+        Tags = 'Microsoft', 'MVP', 'Apply', 'Activity', 'PSEdition_Core', 'Windows', 'Linux', 'macOS'
 
         # A URL to the license for this module.
         LicenseUri = 'https://github.com/JustinGrote/MicrosoftMVP/LICENSE.MD'
