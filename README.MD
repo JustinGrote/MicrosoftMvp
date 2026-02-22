@@ -12,6 +12,9 @@ PowerShell Gallery: https://www.powershellgallery.com/packages/MicrosoftMvp
 
 ## Demos
 
+### Logging In
+By running `Connect-Mvp`, you will be presented with an OAuth login flow to connect to your mvp account.
+
 ### Create a New Activity (with InteliSense)
 
 https://github.com/JustinGrote/MicrosoftMvp/assets/15258962/ad7d6925-e8d8-4d6e-8d24-2e7b3575c77d
